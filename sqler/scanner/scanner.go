@@ -1,0 +1,409 @@
+package scanner
+
+import (
+	"bytes"
+	"fmt"
+	"unicode"
+	"unicode/utf8"
+)
+
+type Position struct {
+	Filename string // filename, if any
+	Offset   int    // offset, starting at 0
+	Line     int    // line number, starting at 1
+	Column   int    // column number, starting at 1 (character count)
+}
+type Error struct {
+	Pos Position
+	Err error
+}
+
+// Scanner based on fatih HLC scanner
+type Scanner struct {
+	buf *bytes.Buffer
+	src []byte
+
+	// Positions
+	srcPos  Position
+	prevPos Position // also remembers last line
+
+	// last character width
+	// and last line width
+	width       int
+	lastLineLen int
+
+	errors []Error
+
+	//tokPos Pos // Why?
+	ch rune // readahead
+
+	//curTok Token // The Current Token
+
+	Position
+}
+
+const eof = rune(-1) // maybe -1
+
+// New creates a New Scanner
+func New(src []byte) *Scanner {
+	b := bytes.NewBuffer(src) // Swap this with a bufio reader perhaps
+	s := &Scanner{
+		buf: b,
+		src: src, // Unfortunate
+	}
+
+	s.srcPos.Line = 1
+
+	return s
+
+}
+
+//TokenText retrieves the current token text
+func (s *Scanner) TokenText() string {
+	return string(s.src[s.Position.Offset:s.srcPos.Offset])
+}
+
+// Scan token and save state to be fetched with
+// (s *Scanner).Token()
+func (s *Scanner) Scan() TokenType {
+	ch := s.next()
+	for isWhitespace(ch) {
+		ch = s.next()
+	}
+	// Same as fatih or text/scanner
+	s.Position.Offset = s.srcPos.Offset - s.width // s.tokStart
+	if s.srcPos.Column > 0 {
+		// common case: last character was not a '\n'
+		s.Position.Line = s.srcPos.Line
+		s.Position.Column = s.srcPos.Column
+	} else {
+		// last character was a '\n'
+		// (we cannot be at the beginning of the source
+		// since we have called next() at least once)
+		s.Position.Line = s.srcPos.Line - 1
+		s.Position.Column = s.lastLineLen
+	}
+	var tok TokenType
+
+	switch ch {
+	case eof:
+		return EOF
+	case '"':
+		return s.scanString('"', DSTRING)
+	case '\'':
+		return s.scanString('\'', SSTRING)
+	case '(':
+		return LPAREN
+	case ')':
+		return RPAREN
+	case ',':
+		return COMMA
+	case ';', '*': // etc
+		return SYMBOL
+	case '.':
+		ch = s.peek()
+		if isDecimal(ch) {
+			ch = s.scanMantissa(ch)
+			ch = s.scanExponent(ch)
+			return FLOAT
+		}
+	default:
+		switch {
+		case isIdentStart(ch):
+			return s.scanIdentifier()
+		case isDecimal(ch):
+			return s.scanNumber(ch) // Should return Type here at least
+		default:
+			s.errorf("Unknown token")
+			return UNKNOWN
+		}
+	}
+	return tok // Keep going
+}
+
+// Based on fatih HCL scanner,
+// Reducing code to common basis
+func (s *Scanner) next() rune {
+	prevPos := s.srcPos
+
+	ch, size, err := s.buf.ReadRune()
+	s.srcPos.Column++
+	s.srcPos.Offset += size
+	s.width = size
+
+	// Err
+	if err != nil {
+		return eof
+	}
+
+	if ch == utf8.RuneError && size == 1 {
+		s.errorf("illegal UTF-8 encoding")
+		return ch
+	}
+	// use Remembered pos
+	s.prevPos = prevPos
+
+	if ch == '\n' {
+		s.lastLineLen = s.srcPos.Column
+		s.srcPos.Line++
+		s.srcPos.Column = 0
+	}
+	return ch
+}
+
+// same as rob pike backup()
+func (s *Scanner) unread() {
+	if err := s.buf.UnreadRune(); err != nil {
+		panic(err)
+	}
+	s.srcPos = s.prevPos
+}
+
+func (s *Scanner) peek() rune {
+	peek, _, err := s.buf.ReadRune()
+	if err != nil {
+		return eof
+	}
+	s.buf.UnreadRune()
+
+	return peek
+}
+
+func (s *Scanner) errorf(format string, a ...interface{}) {
+	s.errors = append(s.errors, Error{s.srcPos, fmt.Errorf(format, a...)})
+}
+
+func (s *Scanner) scanIdentifier() TokenType {
+	ch := s.next()
+	for isLetter(ch) || isDigit(ch) {
+		ch = s.next()
+	}
+	if ch != eof {
+		s.unread()
+	}
+
+	return IDENT
+
+}
+
+// scanString scans a quoted string
+func (s *Scanner) scanString(quoteMark rune, in TokenType) TokenType {
+	for {
+		// read character after quote
+		ch := s.next()
+
+		if ch == '\n' || ch < 0 || ch == eof {
+			s.errorf("literal not terminated")
+			return ERROR
+		}
+
+		if ch == quoteMark {
+			return in
+		}
+
+		if ch == '\\' {
+			s.scanEscape()
+		}
+	}
+
+	// unterminated too
+	return ERROR
+}
+
+// scanEscape scans an escape sequence
+// Why should we scan the escapes?
+func (s *Scanner) scanEscape() rune {
+	// http://en.cppreference.com/w/cpp/language/escape
+	ch := s.next() // read character after '/'
+	switch ch {
+	case 'a', 'b', 'f', 'n', 'r', 't', 'v', '\\', '"':
+		// nothing to do
+	case '0', '1', '2', '3', '4', '5', '6', '7':
+		// octal notation
+		ch = s.scanDigits(ch, 8, 3)
+	case 'x':
+		// hexademical notation
+		ch = s.scanDigits(s.next(), 16, 2)
+	case 'u':
+		// universal character name
+		ch = s.scanDigits(s.next(), 16, 4)
+	case 'U':
+		// universal character name
+		ch = s.scanDigits(s.next(), 16, 8)
+	default:
+		s.errorf("illegal char escape")
+	}
+	return ch
+}
+func (s *Scanner) scanDigits(ch rune, base, n int) rune {
+	for n > 0 && digitVal(ch) < base {
+		ch = s.next()
+		n--
+	}
+	if n > 0 {
+		s.errorf("illegal char escape")
+	}
+
+	// we scanned all digits, put the last non digit char back
+	s.unread()
+	return ch
+}
+
+// scanNumber scans a HCL number definition starting with the given rune
+func (s *Scanner) scanNumber(ch rune) TokenType {
+	if ch == '0' {
+		// check for hexadecimal, octal or float
+		ch = s.next()
+		if ch == 'x' || ch == 'X' {
+			// hexadecimal
+			ch = s.next()
+			found := false
+			for isHexadecimal(ch) {
+				ch = s.next()
+				found = true
+			}
+			if !found {
+				s.errorf("illegal hexadecimal number")
+			}
+
+			if ch != eof {
+				s.unread()
+			}
+
+			return INT
+		}
+
+		// now it's either something like: 0421(octal) or 0.1231(float)
+		illegalOctal := false
+		for isDecimal(ch) {
+			ch = s.next()
+			if ch == '8' || ch == '9' {
+				// this is just a possibility. For example 0159 is illegal, but
+				// 0159.23 is valid. So we mark a possible illegal octal. If
+				// the next character is not a period, we'll print the error.
+				illegalOctal = true
+			}
+		}
+
+		// literals of form 01e10 are treates as Numbers in HCL, which differs from Go.
+		if ch == 'e' || ch == 'E' {
+			ch = s.scanExponent(ch)
+			return INT
+		}
+
+		if ch == '.' {
+			ch = s.scanFraction(ch)
+
+			if ch == 'e' || ch == 'E' {
+				ch = s.next()
+				ch = s.scanExponent(ch)
+			}
+			return FLOAT
+		}
+
+		if illegalOctal {
+			s.errorf("illegal octal number")
+		}
+
+		if ch != eof {
+			s.unread()
+		}
+		return INT
+	}
+
+	s.scanMantissa(ch)
+	ch = s.next() // seek forward
+	// literals of form 1e10 are treates as Numbers in HCL, which differs from Go.
+	if ch == 'e' || ch == 'E' {
+		ch = s.scanExponent(ch)
+		return INT
+	}
+
+	if ch == '.' {
+		ch = s.scanFraction(ch)
+		if ch == 'e' || ch == 'E' {
+			ch = s.next()
+			ch = s.scanExponent(ch)
+		}
+		return FLOAT
+	}
+
+	if ch != eof { // goback
+		s.unread()
+	}
+	return INT
+}
+
+// Sub scans
+// scanMantissa scans the mantissa begining from the rune. It returns the next
+// non decimal rune. It's used to determine wheter it's a fraction or exponent.
+func (s *Scanner) scanMantissa(ch rune) rune {
+	for isDecimal(s.peek()) {
+		ch = s.next()
+	}
+	return ch
+}
+
+// scanFraction scans the fraction after the '.' rune
+func (s *Scanner) scanFraction(ch rune) rune {
+	if ch == '.' {
+		ch = s.scanMantissa(s.next())
+	}
+	return ch
+}
+
+// scanExponent scans the remaining parts of an exponent after the 'e' or 'E'
+// rune.
+func (s *Scanner) scanExponent(ch rune) rune {
+	if ch == 'e' || ch == 'E' {
+		ch = s.next()
+		if ch == '-' || ch == '+' {
+			ch = s.next()
+		}
+		ch = s.scanMantissa(ch)
+	}
+	return ch
+}
+
+// Identifiers
+
+func isIdentStart(ch rune) bool {
+	return isLetter(ch) || ch == '_'
+}
+
+// isHexadecimal returns true if the given rune is a letter
+func isLetter(ch rune) bool {
+	return 'a' <= ch && ch <= 'z' || 'A' <= ch && ch <= 'Z' || ch == '_' || ch >= 0x80 && unicode.IsLetter(ch)
+}
+
+// isHexadecimal returns true if the given rune is a decimal digit
+func isDigit(ch rune) bool {
+	return '0' <= ch && ch <= '9' || ch >= 0x80 && unicode.IsDigit(ch)
+}
+
+// isHexadecimal returns true if the given rune is a decimal number
+func isDecimal(ch rune) bool {
+	return '0' <= ch && ch <= '9'
+}
+
+// isHexadecimal returns true if the given rune is an hexadecimal number
+func isHexadecimal(ch rune) bool {
+	return '0' <= ch && ch <= '9' || 'a' <= ch && ch <= 'f' || 'A' <= ch && ch <= 'F'
+}
+
+// isWhitespace returns true if the rune is a space, tab, newline or carriage return
+func isWhitespace(ch rune) bool {
+	return ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r'
+}
+
+func digitVal(ch rune) int {
+	switch {
+	case '0' <= ch && ch <= '9':
+		return int(ch - '0')
+	case 'a' <= ch && ch <= 'f':
+		return int(ch - 'a' + 10)
+	case 'A' <= ch && ch <= 'F':
+		return int(ch - 'A' + 10)
+	}
+	return 16 // larger than any legal digit val
+}

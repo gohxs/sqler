@@ -1,0 +1,17 @@
+goos: linux
+goarch: amd64
+pkg: github.com/gohxs/sqler/sqler/tests/testgoscanner
+
+selfState
+BenchmarkAll/hxs---4         	     300	   4173365 ns/op   BETTER
+BenchmarkAll/hxs---4         	     300	   4162630 ns/op   BETTER
+BenchmarkAll/hxs---4         	     300	   4188616 ns/op
+BenchmarkAll/hxs---4         	     300	   4158600 ns/op   BETTER
+BenchmarkAll/hxs---4         	     300	   4293362 ns/op
+
+TokStruct
+BenchmarkAll/hxs---4         	     300	   4217467 ns/op
+BenchmarkAll/hxs---4         	     300	   4172869 ns/op
+BenchmarkAll/hxs---4         	     300	   4169430 ns/op   BETTER
+BenchmarkAll/hxs---4         	     300	   4173693 ns/op
+BenchmarkAll/hxs---4         	     300	   4244283 ns/op   BETTER
