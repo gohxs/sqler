@@ -1,6 +1,6 @@
 # sqler
 
-Command line interface for multiple sql cli froncli sql
+Command line interface for multiple sql databases
 
 ![output](doc/output.gif)
 
