@@ -180,6 +180,12 @@ func (s *SQLer) execSQL(sqlStr string) {
 	}
 	defer result.Close()
 
+	s.Print(result)
+
+	// Display result
+}
+func (s *SQLer) Print(result *sql.Rows) {
+	w := FmtWriter{s.term}
 	// Handle results
 	resulti := 0
 	for {
