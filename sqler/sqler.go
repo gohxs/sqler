@@ -100,7 +100,9 @@ func (s *SQLer) Start() {
 		s.Cmd(line) // Process command
 	}
 }
-
+func (s *SQLer) SetDB(db *sql.DB) {
+	s.db = &sqlerdb.Default{DB: db}
+}
 func (s *SQLer) Cmd(line string) {
 	wr := &FmtWriter{s.term}
 	args := parseargs(line)
