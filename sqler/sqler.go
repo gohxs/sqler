@@ -20,7 +20,9 @@ import (
 )
 
 func New() *SQLer {
-	return &SQLer{}
+	s := &SQLer{}
+	s.term = termu.New()
+	return s
 }
 
 type SQLer struct {
@@ -56,8 +58,8 @@ func (fh *FileHistory) Append(in string) {
 	f.Close() // Slow?
 }
 
+// Reading for command
 func (s *SQLer) Start() {
-	s.term = termu.New()
 	s.term.SetPrompt("sqler> ")
 
 	// Temp, sample commands for auto completer
@@ -75,9 +77,10 @@ func (s *SQLer) Start() {
 	s.term.History = &fh
 
 	ce := ComplEngine{term: s.term}
+	ce.Suggest = s.sqlComplete()
+
 	s.term.AutoComplete = ce.AutoComplete
 	s.term.Display = ce.Display
-	ce.Suggest = s.sqlComplete()
 
 	if len(os.Args) > 2 {
 		drv := os.Args[1]
@@ -94,14 +97,11 @@ func (s *SQLer) Start() {
 			}
 			return
 		}
-		s.runCmd(line) // Process command
-
-		//fmt.Fprintln(s.term, "Echo:", line)
-		// Process line here
+		s.Cmd(line) // Process command
 	}
 }
 
-func (s *SQLer) runCmd(line string) {
+func (s *SQLer) Cmd(line string) {
 	wr := &FmtWriter{s.term}
 	args := parseargs(line)
 	switch args[0] {
