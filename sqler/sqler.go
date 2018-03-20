@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"io/ioutil"
 	"log"
-	"net/url"
 	"os"
 	"os/user"
 	"strings"
@@ -80,13 +79,11 @@ func (s *SQLer) Start() {
 	s.term.Display = ce.Display
 	ce.Suggest = s.sqlComplete()
 
-	if len(os.Args) > 1 {
-		u, err := url.Parse(os.Args[1])
-		if err != nil {
-			fmt.Fprintln(s.term, "Invalid argument")
-			return
-		}
-		s.open(u.Scheme, os.Args[1])
+	if len(os.Args) > 2 {
+		drv := os.Args[1]
+		dsn := os.Args[2]
+		s.open(drv, dsn)
+
 	}
 	// Do something to history
 	for {
